@@ -79,9 +79,20 @@
 #define GTEST_CONCAT_TOKEN_IMPL_(foo, bar) foo ## bar
 
 // Stringifies its argument.
-#define GTEST_STRINGIFY_(name) #name
+// Work around a bug in visual studio which doesn't accept code like this:
+//
+//   #define GTEST_STRINGIFY_(name) #name
+//   #define MACRO(a, b, c) ... GTEST_STRINGIFY_(a) ...
+//   MACRO(, x, y)
+//
+// Complaining about the argument to GTEST_STRINGIFY_ being empty.
+// This is allowed by the spec.
+#define GTEST_STRINGIFY_HELPER_(name, ...) #name
+#define GTEST_STRINGIFY_(...) GTEST_STRINGIFY_HELPER_(__VA_ARGS__, )
 
-namespace proto2 { class Message; }
+namespace proto2 {
+class MessageLite;
+}
 
 namespace testing {
 
@@ -608,8 +619,9 @@ class GTEST_API_ TypedTestSuitePState {
   // Verifies that registered_tests match the test names in
   // defined_test_names_; returns registered_tests if successful, or
   // aborts the program otherwise.
-  const char* VerifyRegisteredTestNames(
-      const char* file, int line, const char* registered_tests);
+  const char* VerifyRegisteredTestNames(const char* test_suite_name,
+                                        const char* file, int line,
+                                        const char* registered_tests);
 
  private:
   typedef ::std::map<std::string, CodeLocation> RegisteredTestsMap;
@@ -741,6 +753,11 @@ class TypeParameterizedTest<Fixture, TestSel, internal::None> {
   }
 };
 
+GTEST_API_ void RegisterTypeParameterizedTestSuite(const char* test_suite_name,
+                                                   CodeLocation code_location);
+GTEST_API_ void RegisterTypeParameterizedTestSuiteInstantiation(
+    const char* case_name);
+
 // TypeParameterizedTestSuite<Fixture, Tests, Types>::Register()
 // registers *all combinations* of 'Tests' and 'Types' with Google
 // Test.  The return value is insignificant - we just need to return
@@ -753,6 +770,7 @@ class TypeParameterizedTestSuite {
                        const char* test_names,
                        const std::vector<std::string>& type_names =
                            GenerateNames<DefaultNameGenerator, Types>()) {
+    RegisterTypeParameterizedTestSuiteInstantiation(case_name);
     std::string test_name = StripTrailingSpaces(
         GetPrefixUntilComma(test_names));
     if (!state->TestExists(test_name)) {
@@ -828,7 +846,7 @@ struct GTEST_API_ ConstCharPtr {
 
 // Helper for declaring std::string within 'if' statement
 // in pre C++17 build environment.
-struct GTEST_API_ TrueWithString {
+struct TrueWithString {
   TrueWithString() = default;
   explicit TrueWithString(const char* str) : value(str) {}
   explicit TrueWithString(const std::string& str) : value(str) {}
@@ -863,10 +881,10 @@ class GTEST_API_ Random {
   typename std::remove_const<typename std::remove_reference<T>::type>::type
 
 // IsAProtocolMessage<T>::value is a compile-time bool constant that's
-// true if and only if T is type proto2::Message or a subclass of it.
+// true if and only if T is type proto2::MessageLite or a subclass of it.
 template <typename T>
 struct IsAProtocolMessage
-    : public std::is_convertible<const T*, const ::proto2::Message*> {};
+    : public std::is_convertible<const T*, const ::proto2::MessageLite*> {};
 
 // When the compiler sees expression IsContainerTest<C>(0), if C is an
 // STL-style container class, the first overload of IsContainerTest
@@ -1102,8 +1120,6 @@ class NativeArray {
   const Element* array_;
   size_t size_;
   void (NativeArray::*clone_)(const Element*, size_t);
-
-  GTEST_DISALLOW_ASSIGN_(NativeArray);
 };
 
 // Backport of std::index_sequence.
@@ -1267,8 +1283,13 @@ constexpr bool InstantiateTypedTestCase_P_IsDeprecated() { return true; }
 // Suppress MSVC warning 4072 (unreachable code) for the code following
 // statement if it returns or throws (or doesn't return or throw in some
 // situations).
+// NOTE: The "else" is important to keep this expansion to prevent a top-level
+// "else" from attaching to our "if".
 #define GTEST_SUPPRESS_UNREACHABLE_CODE_WARNING_BELOW_(statement) \
-  if (::testing::internal::AlwaysTrue()) { statement; }
+  if (::testing::internal::AlwaysTrue()) {                        \
+    statement;                                                    \
+  } else                     /* NOLINT */                         \
+    static_assert(true, "")  // User must have a semicolon after expansion.
 
 #define GTEST_TEST_THROW_(statement, expected_exception, fail) \
   GTEST_AMBIGUOUS_ELSE_BLOCKER_ \
@@ -1389,12 +1410,15 @@ constexpr bool InstantiateTypedTestCase_P_IsDeprecated() { return true; }
       : public parent_class {                                                 \
    public:                                                                    \
     GTEST_TEST_CLASS_NAME_(test_suite_name, test_name)() {}                   \
+    ~GTEST_TEST_CLASS_NAME_(test_suite_name, test_name)() override = default; \
+    GTEST_DISALLOW_COPY_AND_ASSIGN_(GTEST_TEST_CLASS_NAME_(test_suite_name,   \
+                                                           test_name));       \
+    GTEST_DISALLOW_MOVE_AND_ASSIGN_(GTEST_TEST_CLASS_NAME_(test_suite_name,   \
+                                                           test_name));       \
                                                                               \
    private:                                                                   \
     void TestBody() override;                                                 \
     static ::testing::TestInfo* const test_info_ GTEST_ATTRIBUTE_UNUSED_;     \
-    GTEST_DISALLOW_COPY_AND_ASSIGN_(GTEST_TEST_CLASS_NAME_(test_suite_name,   \
-                                                           test_name));       \
   };                                                                          \
                                                                               \
   ::testing::TestInfo* const GTEST_TEST_CLASS_NAME_(test_suite_name,          \
